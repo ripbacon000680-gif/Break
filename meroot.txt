@@ -1,0 +1,33 @@
+local Library = loadstring(game:HttpGet("https://ais-dev-ur7wuqnkkybcdy57urbdg6-849203576723.asia-southeast1.run.app/raw"))()
+
+local CombatFolder = Library:CreateFolder({
+    Name = "Combat"
+})
+
+local VisualFolder = Library:CreateFolder({
+    Name = "Visual"
+})
+
+CombatFolder:RegisterScript({
+    Name = "Auto_Module",
+    Description = "Auto combat helper",
+    OnEnable = function()
+        print("Combat module enabled")
+    end,
+    OnDisable = function()
+        print("Combat module disabled")
+    end
+})
+
+VisualFolder:RegisterScript({
+    Name = "Visual_Module",
+    Description = "Chams renderer",
+    OnEnable = function()
+        print("Visual module enabled")
+    end,
+    OnDisable = function()
+        print("Visual module disabled")
+    end
+})
+
+Library:Initialize()
