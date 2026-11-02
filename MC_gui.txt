@@ -1,0 +1,965 @@
+--[[
+    MC_meme_edit — Cyber Hacker UI Library
+    Version: 1.0.0
+    Target Environment: Delta X Executor (Android / Mobile & Desktop Luau)
+    Architecture: Fixed UI Core + Extensible Internal API + Virtual Script Manager
+    Style: Cyber Hacker / Dark Terminal
+    Policy Compliance: Zero Emoji Policy, Single Header Documentation Block
+    Usage:
+        local Library = loadstring(game:HttpGet("YOUR_RAW_URL_HERE"))()
+        local Folder = Library:CreateFolder({ Name = "Combat" })
+        local Script = Folder:RegisterScript({
+            Name = "Auto_Module",
+            Description = "Combat optimization routine",
+            OnEnable = function() print("Enabled") end,
+            OnDisable = function() print("Disabled") end
+        })
+        Library:Initialize()
+]]
+
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+
+local Palette = {
+    Background = Color3.fromRGB(5, 11, 10),
+    SecondaryBackground = Color3.fromRGB(7, 18, 12),
+    PanelBackground = Color3.fromRGB(11, 23, 16),
+    ElevatedPanel = Color3.fromRGB(16, 37, 26),
+    PrimaryGreen = Color3.fromRGB(57, 255, 136),
+    SecondaryGreen = Color3.fromRGB(0, 200, 83),
+    CyanAccent = Color3.fromRGB(85, 223, 255),
+    PrimaryText = Color3.fromRGB(180, 245, 201),
+    SecondaryText = Color3.fromRGB(121, 167, 138),
+    Border = Color3.fromRGB(23, 104, 61),
+    Disabled = Color3.fromRGB(83, 99, 90),
+    Error = Color3.fromRGB(255, 83, 83),
+    Warning = Color3.fromRGB(233, 198, 106)
+}
+
+local Library = {}
+Library.__index = Library
+
+local CleanupRegistry = {
+    Connections = {},
+    Tweens = {},
+    Tasks = {},
+    Instances = {}
+}
+
+local VirtualFolders = {}
+local VirtualScripts = {}
+local Components = {}
+local ScriptRuntimeStates = {}
+local ActiveFolderId = nil
+local IsInitialized = false
+local IsExecutingStartup = false
+local IsWindowOpen = false
+local IsDragging = false
+
+local ScreenGui = nil
+local CentralWindow = nil
+local MiniIcon = nil
+local FolderSidebar = nil
+local ScriptContainer = nil
+local NotificationHost = nil
+local WelcomeFrame = nil
+local SettingsFrame = nil
+local IntroFrame = nil
+local PlayerSphereFrame = nil
+
+local function GenerateUUID()
+    local Template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
+    return string.gsub(Template, "[xy]", function(c)
+        local v = (c == "x") and math.random(0, 0xf) or math.random(8, 0xb)
+        return string.format("%x", v)
+    end)
+end
+
+local function RegisterInstance(Inst)
+    table.insert(CleanupRegistry.Instances, Inst)
+    return Inst
+end
+
+local function RegisterConnection(Conn)
+    table.insert(CleanupRegistry.Connections, Conn)
+    return Conn
+end
+
+local function SafeTween(Inst, TweenInfoData, Goal)
+    local Tw = TweenService:Create(Inst, TweenInfoData, Goal)
+    table.insert(CleanupRegistry.Tweens, Tw)
+    Tw:Play()
+    return Tw
+end
+
+local function CreateNotification(Message, Duration)
+    Duration = Duration or 3
+    if not ScreenGui then return end
+    
+    local NotifFrame = RegisterInstance(Instance.new("Frame"))
+    NotifFrame.Name = "HackerNotification"
+    NotifFrame.Size = UDim2.new(0, 320, 0, 48)
+    NotifFrame.Position = UDim2.new(0.5, -160, 0.1, 0)
+    NotifFrame.BackgroundColor3 = Palette.PanelBackground
+    NotifFrame.BorderSizePixel = 1
+    NotifFrame.BorderColor3 = Palette.PrimaryGreen
+    NotifFrame.BackgroundTransparency = 1
+    NotifFrame.Parent = ScreenGui
+
+    local TextLabel = RegisterInstance(Instance.new("TextLabel"))
+    TextLabel.Size = UDim2.new(1, -20, 1, 0)
+    TextLabel.Position = UDim2.new(0, 10, 0, 0)
+    TextLabel.BackgroundTransparency = 1
+    TextLabel.Font = Enum.Font.Code
+    TextLabel.TextSize = 13
+    TextLabel.TextColor3 = Palette.PrimaryText
+    TextLabel.TextXAlignment = Enum.TextXAlignment.Center
+    TextLabel.TextTransparency = 1
+    TextLabel.Text = Message
+    TextLabel.Parent = NotifFrame
+
+    SafeTween(NotifFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { BackgroundTransparency = 0 })
+    SafeTween(TextLabel, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { TextTransparency = 0 })
+
+    task.delay(Duration, function()
+        if NotifFrame and NotifFrame.Parent then
+            local Fade = SafeTween(NotifFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { BackgroundTransparency = 1 })
+            SafeTween(TextLabel, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { TextTransparency = 1 })
+            Fade.Completed:Connect(function()
+                NotifFrame:Destroy()
+            end)
+        end
+    end)
+end
+
+function Library:PurgeAndCleanup()
+    for _, Conn in ipairs(CleanupRegistry.Connections) do
+        if typeof(Conn) == "RBXScriptConnection" and Conn.Connected then
+            Conn:Disconnect()
+        end
+    end
+    for _, Tw in ipairs(CleanupRegistry.Tweens) do
+        if typeof(Tw) == "Tween" then
+            Tw:Cancel()
+        end
+    end
+    for _, Inst in ipairs(CleanupRegistry.Instances) do
+        if typeof(Inst) == "Instance" and Inst.Parent then
+            Inst:Destroy()
+        end
+    end
+    table.clear(CleanupRegistry.Connections)
+    table.clear(CleanupRegistry.Tweens)
+    table.clear(CleanupRegistry.Tasks)
+    table.clear(CleanupRegistry.Instances)
+    if ScreenGui and ScreenGui.Parent then
+        ScreenGui:Destroy()
+    end
+    ScreenGui = nil
+    IsInitialized = false
+    IsExecutingStartup = false
+end
+
+function Library:CreateFolder(Config)
+    assert(type(Config) == "table", "Configuration must be a table")
+    assert(type(Config.Name) == "string" and #Config.Name > 0, "Folder Name must be a non-empty string")
+
+    local FolderId = GenerateUUID()
+    local FolderData = {
+        Id = FolderId,
+        Name = Config.Name,
+        DisplayOrder = #VirtualFolders + 1
+    }
+    table.insert(VirtualFolders, FolderData)
+
+    local FolderHandle = {}
+    function FolderHandle:RegisterScript(ScriptConfig)
+        ScriptConfig.FolderId = FolderId
+        return Library:RegisterScript(ScriptConfig)
+    end
+    FolderHandle.Id = FolderId
+    FolderHandle.Name = Config.Name
+
+    if IsInitialized and FolderSidebar then
+        Library:RefreshFolderView()
+    end
+
+    return FolderHandle
+end
+
+function Library:RenameFolder(FolderId, NewName)
+    assert(type(FolderId) == "string", "FolderId must be a string")
+    assert(type(NewName) == "string" and #NewName > 0, "NewName must be a non-empty string")
+
+    for _, Folder in ipairs(VirtualFolders) do
+        if Folder.Id == FolderId then
+            Folder.Name = NewName
+            if IsInitialized and FolderSidebar then
+                Library:RefreshFolderView()
+            end
+            return true
+        end
+    end
+    return false
+end
+
+function Library:RemoveFolder(FolderId)
+    assert(type(FolderId) == "string", "FolderId must be a string")
+    local TargetIndex = nil
+    for Index, Folder in ipairs(VirtualFolders) do
+        if Folder.Id == FolderId then
+            TargetIndex = Index
+            break
+        end
+    end
+    if TargetIndex then
+        table.remove(VirtualFolders, TargetIndex)
+        local RetainedScripts = {}
+        for _, Sc in ipairs(VirtualScripts) do
+            if Sc.FolderId ~= FolderId then
+                table.insert(RetainedScripts, Sc)
+            end
+        end
+        VirtualScripts = RetainedScripts
+        if ActiveFolderId == FolderId then
+            ActiveFolderId = VirtualFolders[1] and VirtualFolders[1].Id or nil
+        end
+        if IsInitialized then
+            Library:RefreshFolderView()
+            Library:RefreshScriptDisplay()
+        end
+        return true
+    end
+    return false
+end
+
+function Library:GetFolders()
+    local Result = {}
+    for _, F in ipairs(VirtualFolders) do
+        table.insert(Result, { Id = F.Id, Name = F.Name, DisplayOrder = F.DisplayOrder })
+    end
+    return Result
+end
+
+function Library:GetFolderByID(FolderId)
+    for _, F in ipairs(VirtualFolders) do
+        if F.Id == FolderId then
+            return { Id = F.Id, Name = F.Name, DisplayOrder = F.DisplayOrder }
+        end
+    end
+    return nil
+end
+
+function Library:RegisterScript(Config)
+    assert(type(Config) == "table", "Configuration must be a table")
+    assert(type(Config.Name) == "string" and #Config.Name > 0, "Script Name must be a non-empty string")
+    assert(type(Config.FolderId) == "string", "FolderId must be specified")
+
+    local ScriptId = GenerateUUID()
+    local ScriptData = {
+        Id = ScriptId,
+        Name = Config.Name,
+        Description = Config.Description or "",
+        FolderId = Config.FolderId,
+        DisplayOrder = #VirtualScripts + 1,
+        OnEnable = Config.OnEnable or function() end,
+        OnDisable = Config.OnDisable or function() end,
+        HasExecutablePayload = (type(Config.OnEnable) == "function")
+    }
+
+    table.insert(VirtualScripts, ScriptData)
+    ScriptRuntimeStates[ScriptId] = "OFF"
+
+    if IsInitialized and ScriptContainer and ActiveFolderId == Config.FolderId then
+        Library:RefreshScriptDisplay()
+    end
+
+    local ScriptHandle = {
+        Id = ScriptId,
+        Name = Config.Name
+    }
+    return ScriptHandle
+end
+
+function Library:RenameScript(ScriptId, NewName)
+    assert(type(ScriptId) == "string", "ScriptId must be a string")
+    assert(type(NewName) == "string" and #NewName > 0, "NewName must be a non-empty string")
+
+    for _, Sc in ipairs(VirtualScripts) do
+        if Sc.Id == ScriptId then
+            Sc.Name = NewName
+            if IsInitialized and ScriptContainer and ActiveFolderId == Sc.FolderId then
+                Library:RefreshScriptDisplay()
+            end
+            return true
+        end
+    end
+    return false
+end
+
+function Library:RemoveScript(ScriptId)
+    assert(type(ScriptId) == "string", "ScriptId must be a string")
+    for Index, Sc in ipairs(VirtualScripts) do
+        if Sc.Id == ScriptId then
+            if ScriptRuntimeStates[ScriptId] == "ON" or ScriptRuntimeStates[ScriptId] == "LOADING" then
+                Library:SetScriptEnabled(ScriptId, false)
+            end
+            table.remove(VirtualScripts, Index)
+            ScriptRuntimeStates[ScriptId] = nil
+            if IsInitialized and ScriptContainer and ActiveFolderId == Sc.FolderId then
+                Library:RefreshScriptDisplay()
+            end
+            return true
+        end
+    end
+    return false
+end
+
+function Library:MoveScript(ScriptId, TargetFolderId)
+    assert(type(ScriptId) == "string", "ScriptId must be a string")
+    assert(type(TargetFolderId) == "string", "TargetFolderId must be a string")
+
+    for _, Sc in ipairs(VirtualScripts) do
+        if Sc.Id == ScriptId then
+            Sc.FolderId = TargetFolderId
+            if IsInitialized and ScriptContainer then
+                Library:RefreshScriptDisplay()
+            end
+            return true
+        end
+    end
+    return false
+end
+
+function Library:GetScriptState(ScriptId)
+    return ScriptRuntimeStates[ScriptId] or "OFF"
+end
+
+function Library:SetScriptEnabled(ScriptId, Enabled)
+    local TargetScript = nil
+    for _, Sc in ipairs(VirtualScripts) do
+        if Sc.Id == ScriptId then
+            TargetScript = Sc
+            break
+        end
+    end
+    if not TargetScript then return false end
+
+    local CurrentState = ScriptRuntimeStates[ScriptId] or "OFF"
+    if Enabled and CurrentState == "OFF" then
+        ScriptRuntimeStates[ScriptId] = "LOADING"
+        Library:RefreshScriptDisplay()
+
+        task.spawn(function()
+            local Success, Error = pcall(TargetScript.OnEnable)
+            if Success then
+                ScriptRuntimeStates[ScriptId] = "ON"
+            else
+                ScriptRuntimeStates[ScriptId] = "ERROR"
+            end
+            Library:RefreshScriptDisplay()
+        end)
+        return true
+    elseif not Enabled and CurrentState == "ON" then
+        ScriptRuntimeStates[ScriptId] = "STOPPING"
+        Library:RefreshScriptDisplay()
+
+        task.spawn(function()
+            local Success, Error = pcall(TargetScript.OnDisable)
+            if Success then
+                ScriptRuntimeStates[ScriptId] = "OFF"
+            else
+                ScriptRuntimeStates[ScriptId] = "ERROR"
+            end
+            Library:RefreshScriptDisplay()
+        end)
+        return true
+    end
+    return false
+end
+
+function Library:GetFolderScripts(FolderId)
+    local Result = {}
+    for _, Sc in ipairs(VirtualScripts) do
+        if Sc.FolderId == FolderId then
+            table.insert(Result, {
+                Id = Sc.Id,
+                Name = Sc.Name,
+                Description = Sc.Description,
+                State = ScriptRuntimeStates[Sc.Id] or "OFF"
+            })
+        end
+    end
+    return Result
+end
+
+function Library:CreateButton(ParentFrame, Config)
+    assert(type(Config) == "table" and type(Config.Name) == "string", "Valid button config required")
+    local Button = RegisterInstance(Instance.new("TextButton"))
+    Button.Size = UDim2.new(1, 0, 0, 36)
+    Button.BackgroundColor3 = Palette.PanelBackground
+    Button.BorderSizePixel = 1
+    Button.BorderColor3 = Palette.Border
+    Button.Font = Enum.Font.Code
+    Button.TextSize = 13
+    Button.TextColor3 = Palette.PrimaryText
+    Button.Text = Config.Name
+    Button.Parent = ParentFrame
+
+    RegisterConnection(Button.Activated:Connect(function()
+        SafeTween(Button, TweenInfo.new(0.08), { BackgroundColor3 = Palette.ElevatedPanel })
+        task.delay(0.1, function()
+            SafeTween(Button, TweenInfo.new(0.12), { BackgroundColor3 = Palette.PanelBackground })
+        end)
+        if type(Config.Callback) == "function" then
+            pcall(Config.Callback)
+        end
+    end))
+    return Button
+end
+
+function Library:CreateToggle(ParentFrame, Config)
+    assert(type(Config) == "table" and type(Config.Name) == "string", "Valid toggle config required")
+    local CurrentValue = Config.Default or false
+
+    local Frame = RegisterInstance(Instance.new("Frame"))
+    Frame.Size = UDim2.new(1, 0, 0, 36)
+    Frame.BackgroundColor3 = Palette.PanelBackground
+    Frame.BorderSizePixel = 1
+    Frame.BorderColor3 = Palette.Border
+    Frame.Parent = ParentFrame
+
+    local Label = RegisterInstance(Instance.new("TextLabel"))
+    Label.Size = UDim2.new(1, -60, 1, 0)
+    Label.Position = UDim2.new(0, 10, 0, 0)
+    Label.BackgroundTransparency = 1
+    Label.Font = Enum.Font.Code
+    Label.TextSize = 12
+    Label.TextColor3 = Palette.PrimaryText
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Text = Config.Name
+    Label.Parent = Frame
+
+    local Switch = RegisterInstance(Instance.new("TextButton"))
+    Switch.Size = UDim2.new(0, 44, 0, 22)
+    Switch.Position = UDim2.new(1, -54, 0.5, -11)
+    Switch.BackgroundColor3 = CurrentValue and Palette.PrimaryGreen or Palette.Disabled
+    Switch.BorderSizePixel = 0
+    Switch.Font = Enum.Font.Code
+    Switch.TextSize = 10
+    Switch.TextColor3 = CurrentValue and Palette.Background or Palette.PrimaryText
+    Switch.Text = CurrentValue and "ON" or "OFF"
+    Switch.Parent = Frame
+
+    RegisterConnection(Switch.Activated:Connect(function()
+        CurrentValue = not CurrentValue
+        Switch.BackgroundColor3 = CurrentValue and Palette.PrimaryGreen or Palette.Disabled
+        Switch.TextColor3 = CurrentValue and Palette.Background or Palette.PrimaryText
+        Switch.Text = CurrentValue and "ON" or "OFF"
+        if type(Config.Callback) == "function" then
+            pcall(Config.Callback, CurrentValue)
+        end
+    end))
+
+    local ToggleHandle = {}
+    function ToggleHandle:Set(Val)
+        CurrentValue = Val
+        Switch.BackgroundColor3 = CurrentValue and Palette.PrimaryGreen or Palette.Disabled
+        Switch.TextColor3 = CurrentValue and Palette.Background or Palette.PrimaryText
+        Switch.Text = CurrentValue and "ON" or "OFF"
+        if type(Config.Callback) == "function" then
+            pcall(Config.Callback, CurrentValue)
+        end
+    end
+    return ToggleHandle
+end
+
+function Library:CreateSlider(ParentFrame, Config)
+    assert(type(Config) == "table" and type(Config.Name) == "string", "Valid slider config required")
+    local Min = Config.Min or 0
+    local Max = Config.Max or 100
+    local Current = math.clamp(Config.Default or Min, Min, Max)
+
+    local Frame = RegisterInstance(Instance.new("Frame"))
+    Frame.Size = UDim2.new(1, 0, 0, 48)
+    Frame.BackgroundColor3 = Palette.PanelBackground
+    Frame.BorderSizePixel = 1
+    Frame.BorderColor3 = Palette.Border
+    Frame.Parent = ParentFrame
+
+    local Label = RegisterInstance(Instance.new("TextLabel"))
+    Label.Size = UDim2.new(1, -60, 0, 20)
+    Label.Position = UDim2.new(0, 10, 0, 4)
+    Label.BackgroundTransparency = 1
+    Label.Font = Enum.Font.Code
+    Label.TextSize = 12
+    Label.TextColor3 = Palette.PrimaryText
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Text = Config.Name
+    Label.Parent = Frame
+
+    local ValueLabel = RegisterInstance(Instance.new("TextLabel"))
+    ValueLabel.Size = UDim2.new(0, 50, 0, 20)
+    ValueLabel.Position = UDim2.new(1, -60, 0, 4)
+    ValueLabel.BackgroundTransparency = 1
+    ValueLabel.Font = Enum.Font.Code
+    ValueLabel.TextSize = 12
+    ValueLabel.TextColor3 = Palette.CyanAccent
+    ValueLabel.TextXAlignment = Enum.TextXAlignment.Right
+    ValueLabel.Text = tostring(Current)
+    ValueLabel.Parent = Frame
+
+    local Track = RegisterInstance(Instance.new("Frame"))
+    Track.Size = UDim2.new(1, -20, 0, 8)
+    Track.Position = UDim2.new(0, 10, 0, 28)
+    Track.BackgroundColor3 = Palette.SecondaryBackground
+    Track.BorderSizePixel = 1
+    Track.BorderColor3 = Palette.Border
+    Track.Parent = Frame
+
+    local Fill = RegisterInstance(Instance.new("Frame"))
+    Fill.Size = UDim2.new((Current - Min) / (Max - Min), 0, 1, 0)
+    Fill.BackgroundColor3 = Palette.PrimaryGreen
+    Fill.BorderSizePixel = 0
+    Fill.Parent = Track
+
+    local SliderHandle = {}
+    function SliderHandle:Set(NewVal)
+        Current = math.clamp(NewVal, Min, Max)
+        ValueLabel.Text = tostring(Current)
+        Fill.Size = UDim2.new((Current - Min) / (Max - Min), 0, 1, 0)
+        if type(Config.Callback) == "function" then
+            pcall(Config.Callback, Current)
+        end
+    end
+    return SliderHandle
+end
+
+local function BuildGuiStructure()
+    local ParentTarget = CoreGui:FindFirstChild("RobloxGui") or CoreGui
+    ScreenGui = RegisterInstance(Instance.new("ScreenGui"))
+    ScreenGui.Name = "MC_meme_edit_Host"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.Parent = ParentTarget
+
+    CentralWindow = RegisterInstance(Instance.new("Frame"))
+    CentralWindow.Name = "MainWindow"
+    CentralWindow.Size = UDim2.new(0, 580, 0, 360)
+    CentralWindow.Position = UDim2.new(0.5, -290, 0.5, -180)
+    CentralWindow.BackgroundColor3 = Palette.Background
+    CentralWindow.BorderSizePixel = 1
+    CentralWindow.BorderColor3 = Palette.Border
+    CentralWindow.Visible = false
+    CentralWindow.Parent = ScreenGui
+
+    local Header = RegisterInstance(Instance.new("Frame"))
+    Header.Name = "Header"
+    Header.Size = UDim2.new(1, 0, 0, 34)
+    Header.BackgroundColor3 = Palette.PanelBackground
+    Header.BorderSizePixel = 1
+    Header.BorderColor3 = Palette.Border
+    Header.Parent = CentralWindow
+
+    local Title = RegisterInstance(Instance.new("TextLabel"))
+    Title.Size = UDim2.new(1, -70, 1, 0)
+    Title.Position = UDim2.new(0, 12, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Font = Enum.Font.Code
+    Title.TextSize = 14
+    Title.TextColor3 = Palette.PrimaryGreen
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Text = "MC_meme_edit"
+    Title.Parent = Header
+
+    local MinimizeBtn = RegisterInstance(Instance.new("TextButton"))
+    MinimizeBtn.Size = UDim2.new(0, 30, 0, 24)
+    MinimizeBtn.Position = UDim2.new(1, -34, 0, 5)
+    MinimizeBtn.BackgroundColor3 = Palette.ElevatedPanel
+    MinimizeBtn.BorderSizePixel = 1
+    MinimizeBtn.BorderColor3 = Palette.Border
+    MinimizeBtn.Font = Enum.Font.Code
+    MinimizeBtn.TextSize = 13
+    MinimizeBtn.TextColor3 = Palette.PrimaryText
+    MinimizeBtn.Text = "_"
+    MinimizeBtn.Parent = Header
+
+    RegisterConnection(MinimizeBtn.Activated:Connect(function()
+        Library:MinimizeWindow()
+    end))
+
+    local DragInput, DragStart, StartPos
+    RegisterConnection(Header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            IsDragging = true
+            DragStart = input.Position
+            StartPos = CentralWindow.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    IsDragging = false
+                end
+            end)
+        end
+    end))
+
+    RegisterConnection(UserInputService.InputChanged:Connect(function(input)
+        if IsDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local Delta = input.Position - DragStart
+            CentralWindow.Position = UDim2.new(
+                StartPos.X.Scale,
+                StartPos.X.Offset + Delta.X,
+                StartPos.Y.Scale,
+                StartPos.Y.Offset + Delta.Y
+            )
+        end
+    end))
+
+    local ContentArea = RegisterInstance(Instance.new("Frame"))
+    ContentArea.Name = "ScriptManagerLayout"
+    ContentArea.Size = UDim2.new(1, 0, 1, -34)
+    ContentArea.Position = UDim2.new(0, 0, 0, 34)
+    ContentArea.BackgroundTransparency = 1
+    ContentArea.Parent = CentralWindow
+
+    FolderSidebar = RegisterInstance(Instance.new("ScrollingFrame"))
+    FolderSidebar.Name = "FolderSidebar"
+    FolderSidebar.Size = UDim2.new(0.2, 0, 1, 0)
+    FolderSidebar.Position = UDim2.new(0, 0, 0, 0)
+    FolderSidebar.BackgroundColor3 = Palette.SecondaryBackground
+    FolderSidebar.BorderSizePixel = 1
+    FolderSidebar.BorderColor3 = Palette.Border
+    FolderSidebar.ScrollBarThickness = 3
+    FolderSidebar.ScrollBarImageColor3 = Palette.Border
+    FolderSidebar.Parent = ContentArea
+
+    local FolderListLayout = RegisterInstance(Instance.new("UIListLayout"))
+    FolderListLayout.Padding = UDim.new(0, 2)
+    FolderListLayout.Parent = FolderSidebar
+
+    ScriptContainer = RegisterInstance(Instance.new("ScrollingFrame"))
+    ScriptContainer.Name = "ScriptDisplayArea"
+    ScriptContainer.Size = UDim2.new(0.8, 0, 1, 0)
+    ScriptContainer.Position = UDim2.new(0.2, 0, 0, 0)
+    ScriptContainer.BackgroundColor3 = Palette.Background
+    ScriptContainer.BorderSizePixel = 1
+    ScriptContainer.BorderColor3 = Palette.Border
+    ScriptContainer.ScrollBarThickness = 4
+    ScriptContainer.ScrollBarImageColor3 = Palette.Border
+    ScriptContainer.Parent = ContentArea
+
+    local ScriptListLayout = RegisterInstance(Instance.new("UIListLayout"))
+    ScriptListLayout.Padding = UDim.new(0, 4)
+    ScriptListLayout.Parent = ScriptContainer
+
+    MiniIcon = RegisterInstance(Instance.new("TextButton"))
+    MiniIcon.Name = "MC_MiniIcon"
+    MiniIcon.Size = UDim2.new(0, 52, 0, 52)
+    MiniIcon.Position = UDim2.new(0.5, -26, 0.5, -26)
+    MiniIcon.BackgroundColor3 = Palette.PanelBackground
+    MiniIcon.BorderSizePixel = 2
+    MiniIcon.BorderColor3 = Palette.PrimaryGreen
+    MiniIcon.Font = Enum.Font.Code
+    MiniIcon.TextSize = 16
+    MiniIcon.TextColor3 = Palette.PrimaryGreen
+    MiniIcon.Text = "MC"
+    MiniIcon.Visible = false
+    MiniIcon.Parent = ScreenGui
+
+    RegisterConnection(MiniIcon.Activated:Connect(function()
+        Library:ExpandWindow()
+    end))
+end
+
+function Library:RefreshFolderView()
+    if not FolderSidebar then return end
+    for _, Child in ipairs(FolderSidebar:GetChildren()) do
+        if Child:IsA("TextButton") then
+            Child:Destroy()
+        end
+    end
+
+    if not ActiveFolderId and #VirtualFolders > 0 then
+        ActiveFolderId = VirtualFolders[1].Id
+    end
+
+    for _, Folder in ipairs(VirtualFolders) do
+        local FBtn = RegisterInstance(Instance.new("TextButton"))
+        FBtn.Size = UDim2.new(1, 0, 0, 32)
+        local IsActive = (Folder.Id == ActiveFolderId)
+        FBtn.BackgroundColor3 = IsActive and Palette.ElevatedPanel or Palette.SecondaryBackground
+        FBtn.BorderSizePixel = 0
+        FBtn.Font = Enum.Font.Code
+        FBtn.TextSize = 12
+        FBtn.TextColor3 = IsActive and Palette.PrimaryGreen or Palette.SecondaryText
+        FBtn.TextXAlignment = Enum.TextXAlignment.Left
+        FBtn.Text = "  > " .. Folder.Name
+        FBtn.Parent = FolderSidebar
+
+        RegisterConnection(FBtn.Activated:Connect(function()
+            ActiveFolderId = Folder.Id
+            Library:RefreshFolderView()
+            Library:RefreshScriptDisplay()
+        end))
+    end
+end
+
+function Library:RefreshScriptDisplay()
+    if not ScriptContainer then return end
+    for _, Child in ipairs(ScriptContainer:GetChildren()) do
+        if Child:IsA("Frame") or Child:IsA("TextLabel") then
+            Child:Destroy()
+        end
+    end
+
+    if not ActiveFolderId then
+        local EmptyNotice = RegisterInstance(Instance.new("TextLabel"))
+        EmptyNotice.Size = UDim2.new(1, 0, 0, 80)
+        EmptyNotice.BackgroundTransparency = 1
+        EmptyNotice.Font = Enum.Font.Code
+        EmptyNotice.TextSize = 13
+        EmptyNotice.TextColor3 = Palette.Disabled
+        EmptyNotice.Text = "NO SCRIPTS IN THIS FOLDER"
+        EmptyNotice.Parent = ScriptContainer
+        return
+    end
+
+    local ScriptsInFolder = {}
+    for _, Sc in ipairs(VirtualScripts) do
+        if Sc.FolderId == ActiveFolderId then
+            table.insert(ScriptsInFolder, Sc)
+        end
+    end
+
+    if #ScriptsInFolder == 0 then
+        local EmptyNotice = RegisterInstance(Instance.new("TextLabel"))
+        EmptyNotice.Size = UDim2.new(1, 0, 0, 80)
+        EmptyNotice.BackgroundTransparency = 1
+        EmptyNotice.Font = Enum.Font.Code
+        EmptyNotice.TextSize = 13
+        EmptyNotice.TextColor3 = Palette.Disabled
+        EmptyNotice.Text = "NO SCRIPTS IN THIS FOLDER"
+        EmptyNotice.Parent = ScriptContainer
+        return
+    end
+
+    for _, Sc in ipairs(ScriptsInFolder) do
+        local Entry = RegisterInstance(Instance.new("Frame"))
+        Entry.Size = UDim2.new(1, -8, 0, 48)
+        Entry.Position = UDim2.new(0, 4, 0, 0)
+        Entry.BackgroundColor3 = Palette.PanelBackground
+        Entry.BorderSizePixel = 1
+        Entry.BorderColor3 = Palette.Border
+        Entry.Parent = ScriptContainer
+
+        local NameLabel = RegisterInstance(Instance.new("TextLabel"))
+        NameLabel.Size = UDim2.new(0.6, -10, 0, 22)
+        NameLabel.Position = UDim2.new(0, 10, 0, 4)
+        NameLabel.BackgroundTransparency = 1
+        NameLabel.Font = Enum.Font.Code
+        NameLabel.TextSize = 13
+        NameLabel.TextColor3 = Palette.PrimaryText
+        NameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        local DisplayName = Sc.Name
+        if not string.find(DisplayName, "%.txt$") then
+            DisplayName = DisplayName .. ".txt"
+        end
+        NameLabel.Text = "[TXT] " .. DisplayName
+        NameLabel.Parent = Entry
+
+        local DescLabel = RegisterInstance(Instance.new("TextLabel"))
+        DescLabel.Size = UDim2.new(0.6, -10, 0, 16)
+        DescLabel.Position = UDim2.new(0, 10, 0, 26)
+        DescLabel.BackgroundTransparency = 1
+        DescLabel.Font = Enum.Font.Code
+        DescLabel.TextSize = 10
+        DescLabel.TextColor3 = Palette.SecondaryText
+        DescLabel.TextXAlignment = Enum.TextXAlignment.Left
+        DescLabel.Text = Sc.Description or ""
+        DescLabel.Parent = Entry
+
+        local StateVal = ScriptRuntimeStates[Sc.Id] or "OFF"
+        local StateBadge = RegisterInstance(Instance.new("TextLabel"))
+        StateBadge.Size = UDim2.new(0, 70, 0, 22)
+        StateBadge.Position = UDim2.new(1, -150, 0.5, -11)
+        StateBadge.BackgroundColor3 = Palette.SecondaryBackground
+        StateBadge.BorderSizePixel = 1
+        StateBadge.BorderColor3 = Palette.Border
+        StateBadge.Font = Enum.Font.Code
+        StateBadge.TextSize = 10
+        StateBadge.Text = StateVal
+        if StateVal == "ON" then
+            StateBadge.TextColor3 = Palette.PrimaryGreen
+        elseif StateVal == "LOADING" or StateVal == "STOPPING" then
+            StateBadge.TextColor3 = Palette.Warning
+        elseif StateVal == "ERROR" then
+            StateBadge.TextColor3 = Palette.Error
+        else
+            StateBadge.TextColor3 = Palette.Disabled
+        end
+        StateBadge.Parent = Entry
+
+        local ToggleBtn = RegisterInstance(Instance.new("TextButton"))
+        ToggleBtn.Size = UDim2.new(0, 56, 0, 26)
+        ToggleBtn.Position = UDim2.new(1, -68, 0.5, -13)
+        ToggleBtn.BackgroundColor3 = (StateVal == "ON") and Palette.PrimaryGreen or Palette.ElevatedPanel
+        ToggleBtn.BorderSizePixel = 1
+        ToggleBtn.BorderColor3 = Palette.Border
+        ToggleBtn.Font = Enum.Font.Code
+        ToggleBtn.TextSize = 11
+        ToggleBtn.TextColor3 = (StateVal == "ON") and Palette.Background or Palette.PrimaryText
+        ToggleBtn.Text = (StateVal == "ON") and "ACTIVE" or "RUN"
+        ToggleBtn.Parent = Entry
+
+        RegisterConnection(ToggleBtn.Activated:Connect(function()
+            if StateVal == "OFF" or StateVal == "ERROR" then
+                Library:SetScriptEnabled(Sc.Id, true)
+            elseif StateVal == "ON" then
+                Library:SetScriptEnabled(Sc.Id, false)
+            end
+        end))
+    end
+end
+
+function Library:MinimizeWindow()
+    if not CentralWindow or not MiniIcon then return end
+    IsWindowOpen = false
+    CentralWindow.Visible = false
+    MiniIcon.Visible = true
+    SafeTween(MiniIcon, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 52, 0, 52)
+    })
+end
+
+function Library:ExpandWindow()
+    if not CentralWindow or not MiniIcon then return end
+    IsWindowOpen = true
+    MiniIcon.Visible = false
+    CentralWindow.Visible = true
+    CentralWindow.Size = UDim2.new(0, 200, 0, 100)
+    SafeTween(CentralWindow, TweenInfo.new(0.35, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 580, 0, 360)
+    })
+    Library:RefreshFolderView()
+    Library:RefreshScriptDisplay()
+end
+
+local function ExecuteStartupSequence()
+    IsExecutingStartup = true
+    CentralWindow.Visible = false
+    MiniIcon.Visible = false
+
+    local RainCanvas = RegisterInstance(Instance.new("Frame"))
+    RainCanvas.Name = "DigitalRainCanvas"
+    RainCanvas.Size = UDim2.new(1, 0, 1, 0)
+    RainCanvas.BackgroundColor3 = Palette.Background
+    RainCanvas.BorderSizePixel = 0
+    RainCanvas.Parent = ScreenGui
+
+    task.wait(0.4)
+
+    local RainLabels = {}
+    local Glyphs = {"0", "1", "A", "F", "8", "E", "C", "9", "4", "2", "D", "B"}
+    for i = 1, 28 do
+        local Col = RegisterInstance(Instance.new("TextLabel"))
+        Col.Size = UDim2.new(0, 18, 1, 0)
+        Col.Position = UDim2.new((i - 1) * 0.036, 0, -1, 0)
+        Col.BackgroundTransparency = 1
+        Col.Font = Enum.Font.Code
+        Col.TextSize = 13
+        Col.TextColor3 = Palette.PrimaryGreen
+        Col.TextTransparency = 0.2
+        Col.TextYAlignment = Enum.TextYAlignment.Top
+        local S = ""
+        for j = 1, 24 do
+            S = S .. Glyphs[math.random(1, #Glyphs)] .. "\\n"
+        end
+        Col.Text = S
+        Col.Parent = RainCanvas
+        table.insert(RainLabels, Col)
+        SafeTween(Col, TweenInfo.new(1.4 + math.random() * 0.6, Enum.EasingStyle.Linear), {
+            Position = UDim2.new((i - 1) * 0.036, 0, 0.4, 0)
+        })
+    end
+
+    task.wait(1.8)
+
+    for _, Col in ipairs(RainLabels) do
+        SafeTween(Col, TweenInfo.new(0.5), { TextTransparency = 1 })
+    end
+    task.wait(0.5)
+    RainCanvas:Destroy()
+
+    local Square = RegisterInstance(Instance.new("Frame"))
+    Square.Size = UDim2.new(0, 4, 0, 4)
+    Square.Position = UDim2.new(0.5, -2, 0.5, -2)
+    Square.BackgroundColor3 = Palette.PrimaryGreen
+    Square.BorderSizePixel = 0
+    Square.Parent = ScreenGui
+
+    SafeTween(Square, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 240, 0, 60),
+        Position = UDim2.new(0.5, -120, 0.5, -30)
+    })
+    task.wait(0.35)
+
+    local BrandText = RegisterInstance(Instance.new("TextLabel"))
+    BrandText.Size = UDim2.new(1, 0, 1, 0)
+    BrandText.BackgroundTransparency = 1
+    BrandText.Font = Enum.Font.Code
+    BrandText.TextSize = 16
+    BrandText.TextColor3 = Palette.PrimaryText
+    BrandText.Text = "MC_meme_edit"
+    BrandText.Parent = Square
+
+    task.wait(0.8)
+
+    local FullString = "MC_meme_edit"
+    for step = #FullString, 1, -1 do
+        BrandText.Text = string.sub(FullString, 1, step)
+        task.wait(0.06)
+    end
+    BrandText.Text = ""
+
+    SafeTween(Square, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 52, 0, 52),
+        Position = UDim2.new(0.5, -26, 0.5, -26)
+    })
+    task.wait(0.32)
+
+    BrandText.Text = "MC"
+    BrandText.TextColor3 = Palette.PrimaryGreen
+    task.wait(0.4)
+
+    Square:Destroy()
+    MiniIcon.Visible = true
+    IsExecutingStartup = false
+    Library:ExpandWindow()
+end
+
+function Library:Initialize()
+    BuildGuiStructure()
+
+    local ValidScriptCount = 0
+    for _, Sc in ipairs(VirtualScripts) do
+        if Sc.HasExecutablePayload then
+            ValidScriptCount = ValidScriptCount + 1
+        end
+    end
+
+    if ValidScriptCount == 0 then
+        CreateNotification("You haven't run anything yet", 3)
+        task.delay(3.2, function()
+            Library:PurgeAndCleanup()
+        end)
+        return false
+    end
+
+    IsInitialized = true
+    task.spawn(ExecuteStartupSequence)
+    return true
+end
+
+return Library
